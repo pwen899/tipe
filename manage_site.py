@@ -3,28 +3,33 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import datetime
 import os
+import shutil
 import subprocess
 
 UPDATES_FILE = "index.html"
 DOCS_FILE    = "documents.html"
+UPLOADS_DIR  = "uploads"  # dossier où on copie tout
 
 class UpdateItem:
-    """ Représente une mise à jour (titre, date, contenu). """
     def __init__(self, title, date_str, body):
         self.title = title
         self.date_str = date_str
         self.body = body
-    
+
     def __str__(self):
         return f"{self.title}  [{self.date_str}]"
 
 class DocItem:
-    """ Représente un document (nom, date, url = chemin dossier). """
+    """
+    name: nom d'affichage
+    date_str: ex "2025-02-03 11:00"
+    url: chemin RELATIF vers le fichier/dossier dans uploads/ (ex: "uploads/MonDossier")
+    """
     def __init__(self, name, date_str, url):
         self.name = name
         self.date_str = date_str
         self.url = url
-    
+
     def __str__(self):
         return f"{self.name}  [{self.date_str}]"
 
@@ -33,11 +38,11 @@ class App(tk.Tk):
         super().__init__()
         self.title("Gestion TIPE (GUI)")
 
-        # Notebook -> deux onglets
+        # Notebook -> 2 onglets
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(expand=True, fill="both")
 
-        # --- Onglet Mises à jour ---
+        # === Onglet Mises à jour ===
         self.tab_updates = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_updates, text="Mises à jour")
 
@@ -53,7 +58,7 @@ class App(tk.Tk):
         btn_del_update = tk.Button(self.tab_updates, text="Supprimer", command=self.delete_update)
         btn_del_update.grid(row=1, column=2, sticky="ew", padx=5, pady=5)
 
-        # --- Onglet Documents ---
+        # === Onglet Documents ===
         self.tab_docs = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_docs, text="Documents")
 
@@ -73,6 +78,10 @@ class App(tk.Tk):
         self.updates_data = []
         self.docs_data    = []
 
+        # Créer le dossier uploads si pas existant
+        if not os.path.exists(UPLOADS_DIR):
+            os.makedirs(UPLOADS_DIR)
+
         # Charger depuis HTML
         self.load_updates_from_html()
         self.load_docs_from_html()
@@ -80,7 +89,7 @@ class App(tk.Tk):
         self.refresh_docs_listbox()
 
     # ------------------------------------------------------------------
-    #  FONCTIONS : MISES A JOUR
+    #  Fonctions "Mises à jour"
     # ------------------------------------------------------------------
     def load_updates_from_html(self):
         self.updates_data.clear()
@@ -100,15 +109,14 @@ class App(tk.Tk):
             block = content[start_div:end_div+len('</div>')]
             start = end_div + len('</div>')
 
-            title = self.extract_tag(block, "strong")
-            date_str = self.extract_tag(block, "em")
-            body  = self.extract_tag(block, "p")
+            title   = self.extract_tag(block, "strong")
+            date_str= self.extract_tag(block, "em")
+            body    = self.extract_tag(block, "p")
             if not date_str:
                 date_str = ""
             self.updates_data.append(UpdateItem(title, date_str, body))
 
     def save_updates_to_html(self):
-        # Charge l'ancien squelette ou en crée un minimal
         if os.path.exists(UPDATES_FILE):
             with open(UPDATES_FILE, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -118,11 +126,7 @@ class App(tk.Tk):
 <div class="container"><!-- Les mises à jour existantes s'insèrent ici --></div>
 </body></html>
 """
-
-        # Retire tous les <div class="update">... existants
         new_content = self.remove_all_blocks(content, 'update')
-
-        # Reconstruire
         blocks_html = ""
         for upd in self.updates_data:
             blocks_html += f"""
@@ -158,14 +162,13 @@ class App(tk.Tk):
             t = entry_title.get().strip()
             b = txt_body.get("1.0", "end").strip()
             if not t or not b:
-                messagebox.showwarning("Erreur", "Remplir tous les champs.")
+                messagebox.showwarning("Erreur", "Veuillez remplir tous les champs.")
                 return
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             new_item = UpdateItem(t, now_str, b)
             self.updates_data.append(new_item)
             self.save_updates_to_html()
             self.refresh_updates_listbox()
-            # On fait direct le commit & push
             commit_and_push("Ajout mise à jour")
             popup.destroy()
 
@@ -198,10 +201,8 @@ class App(tk.Tk):
             if not new_t or not new_b:
                 messagebox.showwarning("Erreur", "Champs vides ?")
                 return
-            # On met à jour en mémoire
             upd.title = new_t
             upd.body  = new_b
-            # Option : mettre à jour la date => upd.date_str = ...
             self.save_updates_to_html()
             self.refresh_updates_listbox()
             commit_and_push("Modification mise à jour")
@@ -229,7 +230,7 @@ class App(tk.Tk):
             self.update_list.insert(tk.END, str(u))
 
     # ------------------------------------------------------------------
-    #  FONCTIONS : DOCUMENTS
+    #  Fonctions "Documents"
     # ------------------------------------------------------------------
     def load_docs_from_html(self):
         self.docs_data.clear()
@@ -264,11 +265,10 @@ class App(tk.Tk):
                 content = f.read()
         else:
             content = """<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>Docs</title></head><body>
+<html lang="fr"><head><meta charset="UTF-8"><title>Documents</title></head><body>
 <div class="container"><!-- Les documents ajoutés s'insèrent ici --></div>
 </body></html>
 """
-
         new_content = self.remove_all_blocks(content, 'doc-item')
 
         blocks_html = ""
@@ -292,15 +292,24 @@ class App(tk.Tk):
 
     def add_doc_popup(self):
         popup = tk.Toplevel(self)
-        popup.title("Ajouter un document (dossier)")
+        popup.title("Ajouter un document")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
         entry_name.pack()
 
-        tk.Label(popup, text="Dossier :").pack(pady=5)
+        tk.Label(popup, text="Chemin local (fichier ou dossier) :").pack(pady=5)
         entry_path = tk.Entry(popup, width=40)
         entry_path.pack()
+
+        frame_btns = tk.Frame(popup)
+        frame_btns.pack(pady=5)
+
+        def choose_file():
+            path = filedialog.askopenfilename()
+            if path:
+                entry_path.delete(0, tk.END)
+                entry_path.insert(0, path)
 
         def choose_folder():
             folder = filedialog.askdirectory()
@@ -308,7 +317,10 @@ class App(tk.Tk):
                 entry_path.delete(0, tk.END)
                 entry_path.insert(0, folder)
 
-        tk.Button(popup, text="Choisir un dossier...", command=choose_folder).pack(pady=5)
+        btn_file = tk.Button(frame_btns, text="Choisir un fichier...", command=choose_file)
+        btn_file.pack(side="left", padx=5)
+        btn_dir  = tk.Button(frame_btns, text="Choisir un dossier...", command=choose_folder)
+        btn_dir.pack(side="left", padx=5)
 
         def on_save():
             n = entry_name.get().strip()
@@ -316,12 +328,16 @@ class App(tk.Tk):
             if not n or not p:
                 messagebox.showwarning("Erreur", "Champs vides ?")
                 return
+
+            # Copie le fichier/dossier dans uploads/
+            new_path_relative = copy_to_uploads(p)
+
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            new_doc = DocItem(n, now_str, p)
+            new_doc = DocItem(n, now_str, new_path_relative)
             self.docs_data.append(new_doc)
             self.save_docs_to_html()
             self.refresh_docs_listbox()
-            commit_and_push("Ajout document (dossier)")
+            commit_and_push("Ajout document")
             popup.destroy()
 
         tk.Button(popup, text="Enregistrer", command=on_save).pack(pady=10)
@@ -335,17 +351,26 @@ class App(tk.Tk):
         doc = self.docs_data[idx]
 
         popup = tk.Toplevel(self)
-        popup.title("Modifier le document (dossier)")
+        popup.title("Modifier le document")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
         entry_name.pack()
         entry_name.insert(0, doc.name)
 
-        tk.Label(popup, text="Dossier :").pack(pady=5)
+        tk.Label(popup, text="Nouveau chemin (fichier ou dossier) :").pack(pady=5)
         entry_path = tk.Entry(popup, width=40)
         entry_path.pack()
-        entry_path.insert(0, doc.url)
+        entry_path.insert(0, doc.url)  # On y met le chemin RELATIF actuel, ou rien
+
+        frame_btns = tk.Frame(popup)
+        frame_btns.pack(pady=5)
+
+        def choose_file():
+            path = filedialog.askopenfilename()
+            if path:
+                entry_path.delete(0, tk.END)
+                entry_path.insert(0, path)
 
         def choose_folder():
             folder = filedialog.askdirectory()
@@ -353,16 +378,25 @@ class App(tk.Tk):
                 entry_path.delete(0, tk.END)
                 entry_path.insert(0, folder)
 
-        tk.Button(popup, text="Choisir un dossier...", command=choose_folder).pack(pady=5)
+        btn_file = tk.Button(frame_btns, text="Choisir un fichier...", command=choose_file)
+        btn_file.pack(side="left", padx=5)
+        btn_dir  = tk.Button(frame_btns, text="Choisir un dossier...", command=choose_folder)
+        btn_dir.pack(side="left", padx=5)
 
         def on_save():
             new_name = entry_name.get().strip()
             new_path = entry_path.get().strip()
-            if not new_name or not new_path:
-                messagebox.showwarning("Erreur", "Champs vides ?")
+            if not new_name:
+                messagebox.showwarning("Erreur", "Nom vide ?")
                 return
             doc.name = new_name
-            doc.url  = new_path
+            # Si l'utilisateur veut changer le chemin, on recopie
+            if os.path.exists(new_path):
+                doc.url = copy_to_uploads(new_path)
+            else:
+                # Sinon, on garde l'ancien s'il n'a pas choisi
+                pass
+
             self.save_docs_to_html()
             self.refresh_docs_listbox()
             commit_and_push("Modification document")
@@ -390,11 +424,10 @@ class App(tk.Tk):
             self.docs_list.insert(tk.END, str(d))
 
     # ------------------------------------------------------------------
-    #  OUTILS HTML
+    #  Outils HTML
     # ------------------------------------------------------------------
     @staticmethod
     def extract_tag(block, tag):
-        """Extrait le contenu <tag>...</tag> (1ère occurrence)."""
         start_tag = f"<{tag}>"
         end_tag   = f"</{tag}>"
         s = block.find(start_tag)
@@ -407,7 +440,6 @@ class App(tk.Tk):
 
     @staticmethod
     def extract_href(block):
-        """Extrait href="..." (1ère occurrence)."""
         href_idx = block.find('href="')
         if href_idx == -1:
             return ""
@@ -418,7 +450,6 @@ class App(tk.Tk):
 
     @staticmethod
     def remove_all_blocks(content, class_name):
-        """Supprime toutes les <div class="class_name">...</div> dans content."""
         new_c = content
         while True:
             start_div = new_c.find(f'<div class="{class_name}">')
@@ -431,13 +462,44 @@ class App(tk.Tk):
             new_c = new_c[:start_div] + new_c[end_div:]
         return new_c
 
+
 # ----------------------------------------------------------------
-#  FONCTION GIT
+#  Copier fichier/dossier vers uploads/
+# ----------------------------------------------------------------
+def copy_to_uploads(src_path):
+    """
+    Copie un fichier ou un dossier dans le dossier UPLOADS_DIR.
+    Renvoie le chemin relatif (ex : "uploads/MonFichier.pdf" ou "uploads/MonDossier").
+    
+    - Gère les collisions en écrasant si le dossier/fichier existe déjà 
+      (ou on peut décider d'ajouter un suffixe).
+    """
+    # Nom de base
+    base_name = os.path.basename(src_path)
+    dest_path = os.path.join(UPLOADS_DIR, base_name)
+
+    # Si c'est un dossier
+    if os.path.isdir(src_path):
+        # s'il existe déjà, on supprime pour recopier (ou on peut renommer)
+        if os.path.exists(dest_path):
+            shutil.rmtree(dest_path)
+        shutil.copytree(src_path, dest_path)
+    else:
+        # c'est un fichier
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        shutil.copy2(src_path, dest_path)
+
+    return dest_path  # Chemin relatif à la racine du repo
+
+
+# ----------------------------------------------------------------
+#  Commandes Git
 # ----------------------------------------------------------------
 def commit_and_push(message):
     """
-    Lance git add ., git commit -m message, git push origin main
-    Si ton remote/branche est configuré autrement, adapte la commande push.
+    Exécute git add ., git commit -m message, git push origin main
+    Suppose que la remote est "origin" et la branche "main".
     """
     try:
         subprocess.run(["git", "add", "."], check=True)
@@ -446,6 +508,7 @@ def commit_and_push(message):
         messagebox.showinfo("Git", f"Modifications poussées sur GitHub (commit: {message})")
     except subprocess.CalledProcessError as e:
         messagebox.showerror("Git Error", f"Une erreur est survenue:\n{e}")
+
 
 # ----------------------------------------------------------------
 #  MAIN
