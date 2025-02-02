@@ -3,12 +3,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import datetime
 import os
+import zipfile
 import shutil
 import subprocess
 
 UPDATES_FILE = "index.html"
 DOCS_FILE    = "documents.html"
-UPLOADS_DIR  = "uploads"  # dossier où on copie tout
+UPLOADS_DIR  = "uploads"  # dossier où on range les zip
 
 class UpdateItem:
     def __init__(self, title, date_str, body):
@@ -21,9 +22,9 @@ class UpdateItem:
 
 class DocItem:
     """
-    name: nom d'affichage
-    date_str: ex "2025-02-03 11:00"
-    url: chemin RELATIF vers le fichier/dossier dans uploads/ (ex: "uploads/MonDossier")
+    name  : nom du document (affiché)
+    date_str : date d'ajout/modif
+    url   : chemin vers le ZIP (ex "uploads/MonDossier.zip")
     """
     def __init__(self, name, date_str, url):
         self.name = name
@@ -89,7 +90,7 @@ class App(tk.Tk):
         self.refresh_docs_listbox()
 
     # ------------------------------------------------------------------
-    #  Fonctions "Mises à jour"
+    #  Mises à jour
     # ------------------------------------------------------------------
     def load_updates_from_html(self):
         self.updates_data.clear()
@@ -230,7 +231,7 @@ class App(tk.Tk):
             self.update_list.insert(tk.END, str(u))
 
     # ------------------------------------------------------------------
-    #  Fonctions "Documents"
+    #  Documents
     # ------------------------------------------------------------------
     def load_docs_from_html(self):
         self.docs_data.clear()
@@ -292,7 +293,7 @@ class App(tk.Tk):
 
     def add_doc_popup(self):
         popup = tk.Toplevel(self)
-        popup.title("Ajouter un document")
+        popup.title("Ajouter un document (zippé)")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
@@ -329,15 +330,15 @@ class App(tk.Tk):
                 messagebox.showwarning("Erreur", "Champs vides ?")
                 return
 
-            # Copie le fichier/dossier dans uploads/
-            new_path_relative = copy_to_uploads(p)
+            # On crée un zip et récupère le chemin .zip
+            new_zip_path = make_zip_in_uploads(p)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            new_doc = DocItem(n, now_str, new_path_relative)
+            new_doc = DocItem(n, now_str, new_zip_path)
             self.docs_data.append(new_doc)
             self.save_docs_to_html()
             self.refresh_docs_listbox()
-            commit_and_push("Ajout document")
+            commit_and_push("Ajout document (ZIP)")
             popup.destroy()
 
         tk.Button(popup, text="Enregistrer", command=on_save).pack(pady=10)
@@ -351,17 +352,17 @@ class App(tk.Tk):
         doc = self.docs_data[idx]
 
         popup = tk.Toplevel(self)
-        popup.title("Modifier le document")
+        popup.title("Modifier le document (zippé)")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
         entry_name.pack()
         entry_name.insert(0, doc.name)
 
-        tk.Label(popup, text="Nouveau chemin (fichier ou dossier) :").pack(pady=5)
+        tk.Label(popup, text="Nouveau chemin local :").pack(pady=5)
         entry_path = tk.Entry(popup, width=40)
         entry_path.pack()
-        entry_path.insert(0, doc.url)  # On y met le chemin RELATIF actuel, ou rien
+        entry_path.insert(0, doc.url)  # On y met le chemin ZIP actuel (pas forcément utile)
 
         frame_btns = tk.Frame(popup)
         frame_btns.pack(pady=5)
@@ -385,21 +386,21 @@ class App(tk.Tk):
 
         def on_save():
             new_name = entry_name.get().strip()
-            new_path = entry_path.get().strip()
+            new_src  = entry_path.get().strip()
             if not new_name:
                 messagebox.showwarning("Erreur", "Nom vide ?")
                 return
             doc.name = new_name
-            # Si l'utilisateur veut changer le chemin, on recopie
-            if os.path.exists(new_path):
-                doc.url = copy_to_uploads(new_path)
+            # Si l'utilisateur a indiqué un nouveau chemin existant, on refait un zip
+            if os.path.exists(new_src):
+                doc.url = make_zip_in_uploads(new_src)
             else:
-                # Sinon, on garde l'ancien s'il n'a pas choisi
+                # sinon on garde le ZIP précédent
                 pass
 
             self.save_docs_to_html()
             self.refresh_docs_listbox()
-            commit_and_push("Modification document")
+            commit_and_push("Modification document (ZIP)")
             popup.destroy()
 
         tk.Button(popup, text="Enregistrer", command=on_save).pack(pady=10)
@@ -436,7 +437,7 @@ class App(tk.Tk):
         e = block.find(end_tag, s)
         if e == -1:
             return ""
-        return block[s+len(start_tag): e].strip()
+        return block[s+len(start_tag) : e].strip()
 
     @staticmethod
     def extract_href(block):
@@ -446,7 +447,7 @@ class App(tk.Tk):
         end_quote = block.find('"', href_idx+len('href="'))
         if end_quote == -1:
             return ""
-        return block[href_idx+len('href="'): end_quote]
+        return block[href_idx+len('href="') : end_quote]
 
     @staticmethod
     def remove_all_blocks(content, class_name):
@@ -462,44 +463,50 @@ class App(tk.Tk):
             new_c = new_c[:start_div] + new_c[end_div:]
         return new_c
 
-
 # ----------------------------------------------------------------
-#  Copier fichier/dossier vers uploads/
+#  FONCTION DE ZIP : make_zip_in_uploads
 # ----------------------------------------------------------------
-def copy_to_uploads(src_path):
+def make_zip_in_uploads(src_path):
     """
-    Copie un fichier ou un dossier dans le dossier UPLOADS_DIR.
-    Renvoie le chemin relatif (ex : "uploads/MonFichier.pdf" ou "uploads/MonDossier").
-    
-    - Gère les collisions en écrasant si le dossier/fichier existe déjà 
-      (ou on peut décider d'ajouter un suffixe).
+    Crée un zip dans UPLOADS_DIR à partir d'un fichier ou dossier src_path.
+    Retourne le chemin relatif, ex: "uploads/MonFichier.zip"
+
+    - On supprime l'ancienne archive si elle existe.
+    - On zippe tout le contenu si c'est un dossier, ou un seul fichier si c'est un fichier.
     """
-    # Nom de base
-    base_name = os.path.basename(src_path)
-    dest_path = os.path.join(UPLOADS_DIR, base_name)
+    # Nom de base sans extension
+    base_name = os.path.splitext(os.path.basename(src_path))[0]
+    # Chemin final pour le zip
+    zip_filename = base_name + ".zip"
+    zip_path = os.path.join(UPLOADS_DIR, zip_filename)
 
-    # Si c'est un dossier
-    if os.path.isdir(src_path):
-        # s'il existe déjà, on supprime pour recopier (ou on peut renommer)
-        if os.path.exists(dest_path):
-            shutil.rmtree(dest_path)
-        shutil.copytree(src_path, dest_path)
-    else:
-        # c'est un fichier
-        if os.path.exists(dest_path):
-            os.remove(dest_path)
-        shutil.copy2(src_path, dest_path)
+    # Supprime si déjà existant
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
 
-    return dest_path  # Chemin relatif à la racine du repo
+    # Créer le zip
+    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
+        if os.path.isdir(src_path):
+            # Ajouter tout le contenu du dossier
+            for root, dirs, files in os.walk(src_path):
+                for f in files:
+                    abs_file = os.path.join(root, f)
+                    # chemin relatif pour stocker dans le zip
+                    rel_file = os.path.relpath(abs_file, start=src_path)
+                    zipf.write(abs_file, arcname=rel_file)
+        else:
+            # C'est un fichier
+            zipf.write(src_path, arcname=os.path.basename(src_path))
 
+    # On retourne un chemin relatif "uploads/...zip"
+    return zip_path
 
 # ----------------------------------------------------------------
-#  Commandes Git
+#  Commandes GIT
 # ----------------------------------------------------------------
 def commit_and_push(message):
     """
-    Exécute git add ., git commit -m message, git push origin main
-    Suppose que la remote est "origin" et la branche "main".
+    git add . ; git commit -m "message" ; git push origin main
     """
     try:
         subprocess.run(["git", "add", "."], check=True)
@@ -508,7 +515,6 @@ def commit_and_push(message):
         messagebox.showinfo("Git", f"Modifications poussées sur GitHub (commit: {message})")
     except subprocess.CalledProcessError as e:
         messagebox.showerror("Git Error", f"Une erreur est survenue:\n{e}")
-
 
 # ----------------------------------------------------------------
 #  MAIN
