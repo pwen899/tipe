@@ -9,28 +9,26 @@ import subprocess
 
 UPDATES_FILE = "index.html"
 DOCS_FILE    = "documents.html"
-UPLOADS_DIR  = "uploads"  # dossier où on range les zip
+UPLOADS_DIR  = "uploads"  # dossier où l'on place fichiers ou zip
 
 class UpdateItem:
     def __init__(self, title, date_str, body):
         self.title = title
         self.date_str = date_str
         self.body = body
-
     def __str__(self):
         return f"{self.title}  [{self.date_str}]"
 
 class DocItem:
     """
-    name  : nom du document (affiché)
-    date_str : date d'ajout/modif
-    url   : chemin vers le ZIP (ex "uploads/MonDossier.zip")
+    name  : nom du document (affiché dans la liste)
+    date_str : date d’ajout/modif
+    url   : chemin dans `uploads/` (fichier ou .zip)
     """
     def __init__(self, name, date_str, url):
         self.name = name
         self.date_str = date_str
         self.url = url
-
     def __str__(self):
         return f"{self.name}  [{self.date_str}]"
 
@@ -75,11 +73,11 @@ class App(tk.Tk):
         btn_del_doc = tk.Button(self.tab_docs, text="Supprimer", command=self.delete_doc)
         btn_del_doc.grid(row=1, column=2, sticky="ew", padx=5, pady=5)
 
-        # Données en mémoire
+        # Stockage en mémoire
         self.updates_data = []
         self.docs_data    = []
 
-        # Créer le dossier uploads si pas existant
+        # Créer le dossier uploads s’il n’existe pas
         if not os.path.exists(UPLOADS_DIR):
             os.makedirs(UPLOADS_DIR)
 
@@ -128,6 +126,7 @@ class App(tk.Tk):
 </body></html>
 """
         new_content = self.remove_all_blocks(content, 'update')
+
         blocks_html = ""
         for upd in self.updates_data:
             blocks_html += f"""
@@ -293,7 +292,7 @@ class App(tk.Tk):
 
     def add_doc_popup(self):
         popup = tk.Toplevel(self)
-        popup.title("Ajouter un document (zippé)")
+        popup.title("Ajouter un document")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
@@ -330,15 +329,15 @@ class App(tk.Tk):
                 messagebox.showwarning("Erreur", "Champs vides ?")
                 return
 
-            # On crée un zip et récupère le chemin .zip
-            new_zip_path = make_zip_in_uploads(p)
+            # Gère le dossier vs fichier
+            new_path = handle_upload(p)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            new_doc = DocItem(n, now_str, new_zip_path)
+            new_doc = DocItem(n, now_str, new_path)
             self.docs_data.append(new_doc)
             self.save_docs_to_html()
             self.refresh_docs_listbox()
-            commit_and_push("Ajout document (ZIP)")
+            commit_and_push("Ajout document")
             popup.destroy()
 
         tk.Button(popup, text="Enregistrer", command=on_save).pack(pady=10)
@@ -352,17 +351,17 @@ class App(tk.Tk):
         doc = self.docs_data[idx]
 
         popup = tk.Toplevel(self)
-        popup.title("Modifier le document (zippé)")
+        popup.title("Modifier le document")
 
         tk.Label(popup, text="Nom du document :").pack(pady=5)
         entry_name = tk.Entry(popup, width=40)
         entry_name.pack()
         entry_name.insert(0, doc.name)
 
-        tk.Label(popup, text="Nouveau chemin local :").pack(pady=5)
+        tk.Label(popup, text="Nouveau chemin (fichier ou dossier) :").pack(pady=5)
         entry_path = tk.Entry(popup, width=40)
         entry_path.pack()
-        entry_path.insert(0, doc.url)  # On y met le chemin ZIP actuel (pas forcément utile)
+        entry_path.insert(0, doc.url)
 
         frame_btns = tk.Frame(popup)
         frame_btns.pack(pady=5)
@@ -391,16 +390,16 @@ class App(tk.Tk):
                 messagebox.showwarning("Erreur", "Nom vide ?")
                 return
             doc.name = new_name
-            # Si l'utilisateur a indiqué un nouveau chemin existant, on refait un zip
+            # Si un nouveau chemin existe, on le traite
             if os.path.exists(new_src):
-                doc.url = make_zip_in_uploads(new_src)
+                doc.url = handle_upload(new_src)
             else:
-                # sinon on garde le ZIP précédent
+                # sinon on garde l’ancien
                 pass
 
             self.save_docs_to_html()
             self.refresh_docs_listbox()
-            commit_and_push("Modification document (ZIP)")
+            commit_and_push("Modification document")
             popup.destroy()
 
         tk.Button(popup, text="Enregistrer", command=on_save).pack(pady=10)
@@ -447,7 +446,7 @@ class App(tk.Tk):
         end_quote = block.find('"', href_idx+len('href="'))
         if end_quote == -1:
             return ""
-        return block[href_idx+len('href="') : end_quote]
+        return block[href_idx+len('href="'): end_quote]
 
     @staticmethod
     def remove_all_blocks(content, class_name):
@@ -464,49 +463,58 @@ class App(tk.Tk):
         return new_c
 
 # ----------------------------------------------------------------
-#  FONCTION DE ZIP : make_zip_in_uploads
+#  FONCTION : copier fichier OU zippper dossier
 # ----------------------------------------------------------------
-def make_zip_in_uploads(src_path):
+def handle_upload(src_path):
     """
-    Crée un zip dans UPLOADS_DIR à partir d'un fichier ou dossier src_path.
-    Retourne le chemin relatif, ex: "uploads/MonFichier.zip"
+    - Si src_path est un dossier => on le zippe dans uploads/ (MonDossier.zip) 
+      et on renvoie "uploads/MonDossier.zip".
+    - Si c'est un fichier => on le copie tel quel dans uploads/ (MonDoc.pdf, etc.)
+      et on renvoie "uploads/MonDoc.pdf".
+    """
+    if os.path.isdir(src_path):
+        return make_zip_in_uploads(src_path)
+    else:
+        return copy_file_in_uploads(src_path)
 
-    - On supprime l'ancienne archive si elle existe.
-    - On zippe tout le contenu si c'est un dossier, ou un seul fichier si c'est un fichier.
+def copy_file_in_uploads(file_path):
     """
-    # Nom de base sans extension
-    base_name = os.path.splitext(os.path.basename(src_path))[0]
-    # Chemin final pour le zip
+    Copie un fichier dans uploads/ en conservant son extension.
+    - Si un fichier du même nom existe déjà, on l'écrase.
+    Renvoie "uploads/NomFichier.ext"
+    """
+    base_name = os.path.basename(file_path)  # ex: "Rapport.pdf"
+    dest_path = os.path.join(UPLOADS_DIR, base_name)
+    if os.path.exists(dest_path):
+        os.remove(dest_path)
+    shutil.copy2(file_path, dest_path)
+    return dest_path  # Chemin relatif (uploads/xxx)
+
+def make_zip_in_uploads(dir_path):
+    """
+    Zip tout le contenu d'un dossier dans uploads/MonDossier.zip.
+    Renvoie "uploads/MonDossier.zip".
+    """
+    base_name = os.path.basename(os.path.normpath(dir_path))  # ex: "MonDossier"
     zip_filename = base_name + ".zip"
     zip_path = os.path.join(UPLOADS_DIR, zip_filename)
-
-    # Supprime si déjà existant
     if os.path.exists(zip_path):
         os.remove(zip_path)
 
-    # Créer le zip
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
-        if os.path.isdir(src_path):
-            # Ajouter tout le contenu du dossier
-            for root, dirs, files in os.walk(src_path):
-                for f in files:
-                    abs_file = os.path.join(root, f)
-                    # chemin relatif pour stocker dans le zip
-                    rel_file = os.path.relpath(abs_file, start=src_path)
-                    zipf.write(abs_file, arcname=rel_file)
-        else:
-            # C'est un fichier
-            zipf.write(src_path, arcname=os.path.basename(src_path))
-
-    # On retourne un chemin relatif "uploads/...zip"
+        for root, dirs, files in os.walk(dir_path):
+            for f in files:
+                abs_file = os.path.join(root, f)
+                rel_file = os.path.relpath(abs_file, start=dir_path)
+                zipf.write(abs_file, arcname=rel_file)
     return zip_path
 
 # ----------------------------------------------------------------
-#  Commandes GIT
+#  FONCTION GIT
 # ----------------------------------------------------------------
 def commit_and_push(message):
     """
-    git add . ; git commit -m "message" ; git push origin main
+    git add . ; git commit -m "..."; git push origin main
     """
     try:
         subprocess.run(["git", "add", "."], check=True)
