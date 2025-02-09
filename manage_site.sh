@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Définition du chemin du script Python
-SCRIPT_PATH="/run/media/pierre/Shared/mpii/tipe/repo/manage_site.py"
+SCRIPT_PATH="/home/pierre/protondrive/cpge/tipe/repo/manage_site.py"
 
 # Vérification de l'existence du script
 if [ ! -f "$SCRIPT_PATH" ]; then
