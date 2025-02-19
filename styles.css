@@ -16,7 +16,7 @@ header {
     padding: 3em 2em;
     border-radius: 20px;
     margin-top: 5em;
-    width: 100%;
+    width: 90%;
     max-width: 700px;
     text-align: center;
     transition: box-shadow 0.3s, transform 0.3s;
@@ -41,7 +41,7 @@ nav {
 nav a {
     color: #000000;
     text-decoration: none;
-    margin: 0 2em;
+    margin: 0 1em;
     font-weight: 500;
     border-radius: 20px;
     padding: 0.8em 1.6em;
@@ -56,7 +56,7 @@ nav a:hover {
 
 main {
     padding: 3em 2em;
-    width: 100%;
+    width: 90%;
     max-width: 700px;
 }
 
@@ -122,4 +122,35 @@ p {
 
 .doc-item a:hover {
     color: #0056b3;
+}
+
+/* Media Queries */
+@media (max-width: 768px) {
+    header, main {
+        width: 100%;
+        padding: 2em;
+    }
+
+    nav a {
+        margin: 0.5em 0;
+        padding: 0.6em 1.2em;
+    }
+
+    section {
+        padding: 2em;
+    }
+}
+
+@media (max-width: 480px) {
+    header h1 {
+        font-size: 2em;
+    }
+
+    h2 {
+        font-size: 1.75em;
+    }
+
+    p {
+        font-size: 1em;
+    }
 }
